@@ -1,4 +1,4 @@
-('C:\\Users\\liliang\\Desktop\\M10中转串口\\build\\MQTT2Serial\\PYZ-00.pyz',
+('C:\\Users\\liliang\\Desktop\\mqtt2serial\\build\\MQTT2Serial\\PYZ-00.pyz',
  [('PyQt5',
    'C:\\Users\\liliang\\miniforge3\\Lib\\site-packages\\PyQt5\\__init__.py',
    'PYMODULE'),

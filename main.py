@@ -1,6 +1,6 @@
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QFormLayout, QLineEdit, QLabel, QComboBox, QPushButton, QMessageBox, QGroupBox, QHBoxLayout
-from PyQt5.QtCore import Qt, QUrl
+from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QFormLayout, QLineEdit, QLabel, QComboBox, QPushButton, QMessageBox, QGroupBox, QHBoxLayout, QPlainTextEdit, QStylePainter, QStyleOptionComboBox, QStyle
+from PyQt5.QtCore import Qt, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices, QIcon
 import os
 from pathlib import Path
@@ -8,13 +8,24 @@ import siot
 import serial
 from serial.tools import list_ports
 
+class PortCombo(QComboBox):
+    def paintEvent(self, event):
+        painter = QStylePainter(self)
+        opt = QStyleOptionComboBox()
+        opt.initFrom(self)
+        opt.currentText = self.fontMetrics().elidedText(self.currentText(), Qt.ElideMiddle, self.width() - 24)
+        painter.drawComplexControl(QStyle.CC_ComboBox, opt)
+        painter.drawControl(QStyle.CE_ComboBoxLabel, opt)
+
+
 class MainWindow(QMainWindow):
+    message_received = pyqtSignal(str)
     def __init__(self):
         super().__init__()
         self.serial = None
         self.forwarding_active = False
-        self.setWindowTitle("MQTT2Serial")
-        self.setFixedSize(340, 480)
+        self.setWindowTitle("MQTT2Serial v1.0.1")
+        self.setFixedSize(340, 560)
         try:
             self.setWindowIcon(QIcon(self._resource_path("assets/icon.ico")))
         except Exception:
@@ -56,7 +67,7 @@ class MainWindow(QMainWindow):
         serial_form.setVerticalSpacing(10)
         serial_group.setLayout(serial_form)
 
-        self.port_combo = QComboBox()
+        self.port_combo = PortCombo()
         self.baud_input = QLineEdit("115200")
         serial_form.addRow("串口列表", self.port_combo)
         serial_form.addRow("波特率", self.baud_input)
@@ -67,6 +78,18 @@ class MainWindow(QMainWindow):
 
         root.addWidget(mqtt_group)
         root.addWidget(serial_group)
+
+        recv_group = QGroupBox("当前接收到的数据")
+        recv_layout = QVBoxLayout()
+        recv_group.setLayout(recv_layout)
+        self.recv_text = QPlainTextEdit()
+        self.recv_text.setReadOnly(True)
+        self.recv_text.setPlaceholderText("暂无数据")
+        self.recv_text.setFixedHeight(72)
+        self.recv_text.setMaximumBlockCount(1000)
+        recv_layout.addWidget(self.recv_text)
+
+        root.addWidget(recv_group)
 
         doc_link = QLabel('<a href="https://gitee.com/liliang9693/mqtt2serial">使用说明</a>')
         doc_link.setTextInteractionFlags(Qt.TextBrowserInteraction)
@@ -89,14 +112,21 @@ class MainWindow(QMainWindow):
         )
 
         self._refresh_ports()
+        try:
+            self.port_combo.view().setTextElideMode(Qt.ElideMiddle)
+        except Exception:
+            pass
+        self.message_received.connect(self._append_received_line)
 
     def _refresh_ports(self):
         self.port_combo.clear()
         ports = list_ports.comports()
         for p in ports:
-            self.port_combo.addItem(p.device)
+            desc = getattr(p, "description", "") or ""
+            label = f"{desc} ({p.device})" if desc else p.device
+            self.port_combo.addItem(label, p.device)
         if self.port_combo.count() == 0:
-            self.port_combo.addItem("未检测到串口")
+            self.port_combo.addItem("未检测到串口", None)
 
     def _on_toggle(self):
         if self.forwarding_active:
@@ -110,10 +140,11 @@ class MainWindow(QMainWindow):
         user = self.user_input.text().strip()
         password = self.password_input.text().strip()
         topic = self.topic_input.text().strip()
-        com = self.port_combo.currentText().strip()
+        com_text = self.port_combo.currentText().strip()
+        com = self.port_combo.currentData()
         baud_text = self.baud_input.text().strip()
 
-        if not server or not port_text or not topic or not com or com == "未检测到串口" or not baud_text:
+        if not server or not port_text or not topic or not baud_text or not com:
             QMessageBox.critical(self, "错误", "请完整填写信息并选择有效串口")
             return
 
@@ -134,6 +165,11 @@ class MainWindow(QMainWindow):
         self.toggle_button.setText("连接中...")
         self.toggle_button.setEnabled(False)
         QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        try:
+            self.recv_text.clear()
+        except Exception:
+            pass
 
         try:
             self.serial = serial.Serial(com, baudrate=baudrate, timeout=1)
@@ -171,7 +207,11 @@ class MainWindow(QMainWindow):
     def _stop_forwarding(self):
         try:
             try:
-                siot.disconnect()
+                siot.stop()
+            except Exception:
+                pass
+            try:
+                siot.set_callback(None)
             except Exception:
                 pass
             if self.serial:
@@ -189,6 +229,8 @@ class MainWindow(QMainWindow):
             w.setEnabled(enabled)
 
     def _on_message_callback(self, client, userdata, msg):
+        if not self.forwarding_active:
+            return
         data = msg.payload
         if not isinstance(data, (bytes, bytearray)):
             try:
@@ -200,6 +242,23 @@ class MainWindow(QMainWindow):
                 self.serial.write(data)
             except Exception:
                 pass
+        try:
+            from datetime import datetime
+            ts = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            try:
+                text = data.decode('utf-8', errors='replace')
+            except Exception:
+                text = str(data)
+            line = f"{ts} {text}"
+            self.message_received.emit(line)
+        except Exception:
+            pass
+
+    def _append_received_line(self, line: str):
+        try:
+            self.recv_text.appendPlainText(line)
+        except Exception:
+            pass
 
     def closeEvent(self, event):
         if self.forwarding_active:
